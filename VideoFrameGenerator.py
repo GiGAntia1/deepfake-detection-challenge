@@ -35,7 +35,7 @@ class VideoFrameGenerator(Sequence):
     - nb_channel: int, 1 or 3, to get grayscaled or RGB images
     - glob_pattern: string, directory path with '{classname}' inside that \
         will be replaced by one of the class list
-    - _test_data: already filled list of data, **do not touch !**
+    - _validation_data: already filled list of data, **do not touch !**
     You may use the "classes" property to retrieve the class list afterward.
     The generator has that properties initialized:
     - classes_count: number of classes that the generator manages
@@ -53,13 +53,13 @@ class VideoFrameGenerator(Sequence):
             classes: list = [],
             batch_size: int = 1,
             use_frame_cache: bool = False,
-            target_shape: tuple = (224, 224),
+            target_shape: tuple = (500, 500),
             shuffle: bool = True,
             transformation: ImageDataGenerator = None,
             split: float = None,
             nb_channel: int = 3,
             glob_pattern: str = './videos/{classname}/*.mp4',
-            _test_data: list = None):
+            _validation_data: list = None):
 
         # should be only RGB or Grayscale
         assert nb_channel in (1,3)
@@ -91,10 +91,10 @@ class VideoFrameGenerator(Sequence):
         self.files = []
         self.test = []
 
-        if _test_data is not None:
+        if _validation_data is not None:
             
             # we only need to set files here
-            self.files = _test_data
+            self.files = _validation_data
         
         else:
             
@@ -138,7 +138,7 @@ class VideoFrameGenerator(Sequence):
         print("get %d classes for %d files for %s" % (
             self.classes_count,
             self.files_count,
-            'train' if _test_data is None else 'test'))
+            'train' if _validation_data is None else 'test'))
 
     def get_test_generator(self):
         
@@ -151,7 +151,7 @@ class VideoFrameGenerator(Sequence):
             batch_size=self.batch_size,
             shuffle=self.shuffle,
             rescale=self.rescale,
-            _test_data=self.test)
+            _validation_data=self.test)
 
     def on_epoch_end(self):
         
@@ -187,36 +187,34 @@ class VideoFrameGenerator(Sequence):
             
             # prepare a transformation if provided
             if self.transformation is not None:
-                
                 transformation = self._random_trans[i]
 
             # video = random.choice(files)
             video = self.files[i]
             classname = video.split(os.sep)[-2]
 
-            # create a label array and set 1 to the right column
-            label = np.zeros(len(classes))
-            col = classes.index(classname)
-            label[col] = 1.
+            # Generate the target array of labels
+            if len(classes) == 2:
+                # Assign label to be 0 or 1 for binary classification
+                label = classes.index(classname)
+            else:
+                # create a label array and set 1 to the right column
+                # for multi-class classification
+                label = np.zeros(len(classes))
+                col = classes.index(classname)
+                label[col] = 1.
 
             if video not in self.__frame_cache:
                 
                 cap = cv2.VideoCapture(video)
                 frames = []
                 while True:
-                    
                     grabbed, frame = cap.read()
                     if not grabbed: 
                         break
                     
-                    # resize to (500,500,3)
+                    # resize frame
                     frame = cv2.resize(frame, shape)
-
-                    # use RGB or Grayscale
-                    if self.nb_channel == 3:
-                        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    else:
-                        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
 
                     # to np
                     frame = img_to_array(frame) * self.rescale
@@ -237,19 +235,17 @@ class VideoFrameGenerator(Sequence):
                     self.__frame_cache[video] = frames
             
             else:
-                
                 frames = self.__frame_cache[video]
 
             # apply transformation
             if transformation is not None:
-                
                 frames = [self.transformation.apply_transform(
                     frame, transformation) for frame in frames]
 
-            # reshape the frames (500*500*3 = 750000)
-            # (timesteps, features)
-            frames = np.array(frames)
-            #frames = frames.reshape(10,750000)
+            # reshape the arrays into sequences for LSTM (timesteps, features)
+            # (500*500*3 = 750000)
+            #frames = np.array(frames)
+            #frames = frames.reshape(self.nb_frames,750000)
     
             # add the sequence in batch
             images.append(frames)
