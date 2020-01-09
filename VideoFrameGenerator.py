@@ -9,6 +9,7 @@ and that have no noise frames.
 
 https://github.com/metal3d/keras-video-generators/blob/master/src/keras_video/generator.py
 https://github.com/keras-team/keras/issues/12586
+https://www.pyimagesearch.com/2018/12/31/keras-conv2d-and-convolutional-layers/
 """
 
 import os
@@ -50,7 +51,7 @@ class VideoFrameGenerator(Sequence):
             self,
             rescale=1/255.,
             nb_frames: int = 10,
-            classes: list = [],
+            classes: list = ['FAKE','REAL'],
             batch_size: int = 1,
             use_frame_cache: bool = False,
             target_shape: tuple = (500, 500),
@@ -105,6 +106,8 @@ class VideoFrameGenerator(Sequence):
                     files = glob.glob(glob_pattern.format(classname=i))
                     n_files = len(files)
                     nbval = int(split * n_files)
+                    nbtrain = n_files-nbval
+                    print("class %s, train count: %d" % (i, nbtrain))
                     print("class %s, test count: %d" % (i, nbval))
 
                     # generate test indexes
@@ -117,7 +120,7 @@ class VideoFrameGenerator(Sequence):
                     # remove test from train
                     indexes = np.array([i for i in indexes if i not in val])
 
-                    # and now, make the file list
+                    # make the file lists
                     self.files += [files[i] for i in indexes]
                     self.test += [files[i] for i in val]
 
@@ -134,11 +137,6 @@ class VideoFrameGenerator(Sequence):
 
         # to initialize transformations and shuffle indices
         self.on_epoch_end()
-
-        print("get %d classes for %d files for %s" % (
-            self.classes_count,
-            self.files_count,
-            'train' if _validation_data is None else 'test'))
 
     def get_test_generator(self):
         
