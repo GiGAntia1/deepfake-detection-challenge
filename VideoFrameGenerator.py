@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 """
-VideoFrameGenerator - Simple Generator
+VideoFrameGenerator
 --------------------------------------
 A simple frame generator that takes distributed frames from
 videos. It is useful for videos that are scaled from frame 0 to end
@@ -90,7 +90,7 @@ class VideoFrameGenerator(Sequence):
         self._random_trans = []
         self.__frame_cache = {}
         self.files = []
-        self.test = []
+        self.validation = []
 
         if _validation_data is not None:
             
@@ -122,7 +122,7 @@ class VideoFrameGenerator(Sequence):
 
                     # make the file lists
                     self.files += [files[i] for i in indexes]
-                    self.test += [files[i] for i in val]
+                    self.validation += [files[i] for i in val]
 
             else:
                 
@@ -138,7 +138,7 @@ class VideoFrameGenerator(Sequence):
         # to initialize transformations and shuffle indices
         self.on_epoch_end()
 
-    def get_test_generator(self):
+    def get_validation_generator(self):
         
         """ Return the test generator if you've provided split factor """
         return self.__class__(
@@ -149,7 +149,7 @@ class VideoFrameGenerator(Sequence):
             batch_size=self.batch_size,
             shuffle=self.shuffle,
             rescale=self.rescale,
-            _validation_data=self.test)
+            _validation_data=self.validation)
 
     def on_epoch_end(self):
         
