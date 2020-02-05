@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 """
-VideoFrameGenerator
+VideoFrameGenerator w/ Face Detection
 --------------------------------------
 A simple frame generator that takes distributed frames from
 videos. It is useful for videos that are scaled from frame 0 to end
@@ -16,19 +16,22 @@ import os
 import glob
 import numpy as np
 import cv2
+from math import floor
 from tensorflow.python.keras.utils.data_utils import Sequence
 from tensorflow.keras.preprocessing.image import ImageDataGenerator, img_to_array
+import dlib
+detector = dlib.get_frontal_face_detector()
 
 class VideoFrameGenerator(Sequence):
     
     """
-    Create a generator that return batches of frames from video
+    Create a generator that returns batches of frames from video
+    - phase: str, the phase of model deployment, either 'training' or 'predict'
+    - face_detection: bool, should faces be cropped from the frames?
     - rescale: float fraction to rescale pixel data (commonly 1/255.)
     - nb_frames: int, number of frames to return for each sequence
     - classes: list of str, classes to infer
     - batch_size: int, batch size for each loop
-    - use_frame_cache: bool, use frame cache (may take a lot of memory for \
-        large dataset)
     - shape: tuple, target size of the frames
     - shuffle: bool, randomize files
     - transformation: ImageDataGenerator with transformations
@@ -49,11 +52,12 @@ class VideoFrameGenerator(Sequence):
 
     def __init__(
             self,
+            phase: str = 'training',
+            face_detection: bool = False,
             rescale=1/255.,
             nb_frames: int = 10,
             classes: list = ['FAKE','REAL'],
             batch_size: int = 1,
-            use_frame_cache: bool = False,
             target_shape: tuple = (500, 500),
             shuffle: bool = True,
             transformation: ImageDataGenerator = None,
@@ -65,19 +69,21 @@ class VideoFrameGenerator(Sequence):
         # should be only RGB or Grayscale
         assert nb_channel in (1,3)
 
-        # we should have classes
-        assert len(classes) != 0
-
         # shape size should be 2
         assert len(target_shape) == 2
+        
+        # only two phase types
+        assert phase in ['training','predict']
 
-        # split factor should be a propoer value
+        # split factor should be a proper value
         if split is not None:
             assert 0.0 < split < 1.0
 
         # be sure that classes are well ordered
         classes.sort()
 
+        self.phase = phase
+        self.face_detection = face_detection
         self.rescale = rescale
         self.classes = classes
         self.batch_size = batch_size
@@ -86,11 +92,10 @@ class VideoFrameGenerator(Sequence):
         self.target_shape = target_shape
         self.nb_channel = nb_channel
         self.transformation = transformation
-        self.use_frame_cache = use_frame_cache
         self._random_trans = []
-        self.__frame_cache = {}
         self.files = []
         self.validation = []
+
 
         if _validation_data is not None:
             
@@ -99,36 +104,48 @@ class VideoFrameGenerator(Sequence):
         
         else:
             
-            if split is not None and split > 0.0:
-                
-                for i in classes:
+            # Identify video files for training and validation
+            if phase == 'training':
+            
+                if split is not None and split > 0.0:
                     
-                    files = glob.glob(glob_pattern.format(classname=i))
-                    n_files = len(files)
-                    nbval = int(split * n_files)
-                    nbtrain = n_files-nbval
-                    print("class %s, train count: %d" % (i, nbtrain))
-                    print("class %s, test count: %d" % (i, nbval))
-
-                    # generate test indexes
-                    indexes = np.arange(n_files)
-                    if shuffle: np.random.shuffle(indexes)
+                    for i in classes:
+                        
+                        files = glob.glob(glob_pattern.format(classname=i))
+                        n_files = len(files)
+                        nbval = int(split * n_files)
+                        nbtrain = n_files-nbval
+                        print("class %s, train count: %d" % (i, nbtrain))
+                        print("class %s, test count: %d" % (i, nbval))
+    
+                        # generate test indexes
+                        indexes = np.arange(n_files)
+                        if shuffle: np.random.shuffle(indexes)
+                        
+                        # get some sample
+                        val = np.random.permutation(indexes)[:nbval]
+                        
+                        # remove test from train
+                        indexes = np.array([i for i in indexes if i not in val])
+    
+                        # make the file lists
+                        self.files += [files[i] for i in indexes]
+                        self.validation += [files[i] for i in val]
+    
+                else:
                     
-                    # get some sample
-                    val = np.random.permutation(indexes)[:nbval]
-                    
-                    # remove test from train
-                    indexes = np.array([i for i in indexes if i not in val])
-
-                    # make the file lists
-                    self.files += [files[i] for i in indexes]
-                    self.validation += [files[i] for i in val]
-
+                    for i in classes:
+                        
+                        self.files += glob.glob(glob_pattern.format(classname=i))
+            
+            # Identify video files for prediction
             else:
                 
-                for i in classes:
-                    
-                    self.files += glob.glob(glob_pattern.format(classname=i))
+                files = glob.glob(glob_pattern)
+                n_files = len(files)
+                print("new video count: %d" % n_files)
+                indexes = np.arange(n_files)
+                self.files += files
 
         # build indexes
         self.files_count = len(self.files)
@@ -140,7 +157,7 @@ class VideoFrameGenerator(Sequence):
 
     def get_validation_generator(self):
         
-        """ Return the test generator if you've provided split factor """
+        """ Return the validation generator if you've provided split factor """
         return self.__class__(
             nb_frames=self.nb_frames,
             nb_channel=self.nb_channel,
@@ -163,7 +180,7 @@ class VideoFrameGenerator(Sequence):
                     self.transformation.get_random_transform(self.target_shape)
                 )
 
-        if self.shuffle:
+        if self.shuffle and self.phase == 'training':
             
             np.random.shuffle(self.indexes)
 
@@ -171,16 +188,52 @@ class VideoFrameGenerator(Sequence):
         
         return int(np.floor(self.files_count / self.batch_size))
 
+
+    def detect_faces(self, frame):
+        
+        # Crop image to max-detected face
+        frame_orig = frame
+        try:
+            
+            dets = detector.run(frame,0,-0)
+            shape = self.target_shape
+            
+            if len(dets[0]) == 0:
+                
+                frame = cv2.resize(frame, shape)
+            
+            else:
+                
+                max_face = dets[0][dets[1].index(max(dets[1]))]
+                x = max_face.left()
+                y = max_face.top()
+                w = max_face.right() - x
+                h = max_face.bottom() - y
+                x -= 40; y -= 40; w += 80; h += 80
+                if x < 0: x = 0
+                if y < 0: y = 0
+                frame = cv2.resize(frame[y:y+h,x:x+w], shape)
+            
+            return(frame)
+        
+        except:
+            
+            return(frame_orig)
+        
+
     def __getitem__(self, index):
         
         classes = self.classes
         shape = self.target_shape
         nb_frames = self.nb_frames
+        batch_size = self.batch_size
+        face_detection = self.face_detection
+        indexes = self.indexes[index*batch_size:(index+1)*batch_size]
         labels = []
         images = []
-        indexes = self.indexes[index*self.batch_size:(index+1)*self.batch_size]
         transformation = None
 
+        # Iterate over videos and process the frames
         for i in indexes:
             
             # prepare a transformation if provided
@@ -189,51 +242,65 @@ class VideoFrameGenerator(Sequence):
 
             # video = random.choice(files)
             video = self.files[i]
-            classname = video.split(os.sep)[-2]
-
+            
             # Generate the target array of labels
-            if len(classes) == 2:
-                # Assign label to be 0 or 1 for binary classification
-                label = classes.index(classname)
-            else:
-                # create a label array and set 1 to the right column
-                # for multi-class classification
-                label = np.zeros(len(classes))
-                col = classes.index(classname)
-                label[col] = 1.
-
-            if video not in self.__frame_cache:
+            if self.phase == 'training':
                 
-                cap = cv2.VideoCapture(video)
-                frames = []
-                while True:
-                    grabbed, frame = cap.read()
-                    if not grabbed: 
-                        break
-                    
-                    # resize frame
-                    frame = cv2.resize(frame, shape)
+                classname = video.split(os.sep)[-2]
+                if len(classes) == 2:
+                    # Assign label to be 0 or 1 for binary classification
+                    label = classes.index(classname)
+                else:
+                    # create a label array and set 1 to the right column
+                    # for multi-class classification
+                    label = np.zeros(len(classes))
+                    col = classes.index(classname)
+                    label[col] = 1.
+                
+                labels.append(label)
 
-                    # to np
+            cap = cv2.VideoCapture(video)
+            total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+            frame_step = floor(total_frames/nb_frames/2)
+            frames = []
+            frame_i = 0
+            while True:
+                
+                # Read the next frame from the video
+                grabbed, frame = cap.read()
+                
+                # if the frame was not grabbed, the end of the stream is reached
+                if not grabbed: 
+                    break
+                
+                frame_i += 1
+                if frame_i % frame_step == 0:
+                    
+                    # Convert to grayscale
+                    frame = cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY)
+                    if face_detection:
+                        
+                        # Try to isolate the max probability face
+                        try:
+                            frame = self.detect_faces(frame)
+                        except:
+                            frame = cv2.resize(frame, shape)
+                            print("Face Detection Failure: "+video)
+                            
+                    else:
+                        
+                        frame = cv2.resize(frame, shape)
+                
+                    # Add processed frame to the sequence
                     frame = img_to_array(frame) * self.rescale
                     frames.append(frame)
+                    
+                    # Break once the appropriate number of frames is collected
+                    if len(frames) == nb_frames:
+                        break
 
-                # Add 2 frames to drop first and last frame
-                jump = len(frames)//(nb_frames+2)
-
-                # get only some images
-                try:
-                    frames = frames[jump::jump][:nb_frames]
-                except Exception as exception:
-                    print(video)
-                    raise exception
-
-                # add to frame cache to not read from disk later
-                if self.use_frame_cache:
-                    self.__frame_cache[video] = frames
-            
-            else:
-                frames = self.__frame_cache[video]
+            # End the video capture
+            cap.release()
 
             # apply transformation
             if transformation is not None:
@@ -241,13 +308,12 @@ class VideoFrameGenerator(Sequence):
                     frame, transformation) for frame in frames]
 
             # reshape the arrays into sequences for LSTM (timesteps, features)
-            # (500*500*3 = 750000)
+            # (500*500*3 = 750000) (HEIGHT*WIDTH*CHANNELS)
             #frames = np.array(frames)
             #frames = frames.reshape(self.nb_frames,750000)
     
             # add the sequence in batch
-            images.append(frames)
-            labels.append(label)
+            images.append(frames)                
 
         # Return the final image tensors and label arrays        
         return np.array(images), np.array(labels)
