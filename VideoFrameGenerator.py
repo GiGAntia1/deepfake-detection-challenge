@@ -8,8 +8,6 @@ videos. It is useful for videos that are scaled from frame 0 to end
 and that have no noise frames.
 
 https://github.com/metal3d/keras-video-generators/blob/master/src/keras_video/generator.py
-https://github.com/keras-team/keras/issues/12586
-https://www.pyimagesearch.com/2018/12/31/keras-conv2d-and-convolutional-layers/
 """
 
 import os
