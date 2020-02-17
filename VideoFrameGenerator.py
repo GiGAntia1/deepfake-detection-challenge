@@ -8,6 +8,8 @@ videos. It is useful for videos that are scaled from frame 0 to end
 and that have no noise frames.
 
 https://github.com/metal3d/keras-video-generators/blob/master/src/keras_video/generator.py
+https://github.com/keras-team/keras/issues/12586
+https://www.pyimagesearch.com/2018/12/31/keras-conv2d-and-convolutional-layers/
 """
 
 import os
@@ -207,7 +209,7 @@ class VideoFrameGenerator(Sequence):
                 y = max_face.top()
                 w = max_face.right() - x
                 h = max_face.bottom() - y
-                x -= 40; y -= 40; w += 80; h += 80
+                x -= 50; y -= 50; w += 100; h += 100
                 if x < 0: x = 0
                 if y < 0: y = 0
                 frame = cv2.resize(frame[y:y+h,x:x+w], shape)
@@ -271,11 +273,15 @@ class VideoFrameGenerator(Sequence):
                 if not grabbed: 
                     break
                 
+                # Account for corrupted videos
+                if frame_step == 0:
+                    break
+                
                 frame_i += 1
                 if frame_i % frame_step == 0:
                     
                     # Convert to grayscale
-                    frame = cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY)
+                    frame = cv2.cvtColor(frame,cv2.COLOR_BGR2RGB)
                     if face_detection:
                         
                         # Try to isolate the max probability face
