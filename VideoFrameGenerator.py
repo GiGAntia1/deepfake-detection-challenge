@@ -52,15 +52,14 @@ class VideoFrameGenerator(Sequence):
             face_detection: bool = False,
             rescale=1/255.,
             nb_frames: int = 10,
-            classes: list = ['FAKE','REAL'],
+            classes: list = ['REAL','FAKE'],
             batch_size: int = 1,
             target_shape: tuple = (500, 500),
             shuffle: bool = True,
             transformation: ImageDataGenerator = None,
             split: float = None,
             nb_channel: int = 3,
-            glob_pattern: str = './videos/{classname}/*.mp4',
-            _validation_data: list = None):
+            glob_pattern: str = './videos/{classname}/*.mp4'):
 
         # should be only RGB or Grayscale
         assert nb_channel in (1,3)
@@ -75,9 +74,6 @@ class VideoFrameGenerator(Sequence):
         if split is not None:
             assert 0.0 < split < 1.0
 
-        # be sure that classes are well ordered
-        classes.sort()
-
         self.phase = phase
         self.face_detection = face_detection
         self.rescale = rescale
@@ -90,79 +86,59 @@ class VideoFrameGenerator(Sequence):
         self.transformation = transformation
         self._random_trans = []
         self.files = []
-        self.validation = []
-
-
-        if _validation_data is not None:
             
-            # we only need to set files here
-            self.files = _validation_data
+        # Identify video files for training and validation
+        if phase == 'training':
         
-        else:
-            
-            # Identify video files for training and validation
-            if phase == 'training':
-            
-                if split is not None and split > 0.0:
+            if split is not None and split > 0.0:
+                
+                for i in classes:
                     
-                    for i in classes:
-                        
-                        files = glob.glob(glob_pattern.format(classname=i))
-                        n_files = len(files)
-                        nbval = int(split * n_files)
-                        nbtrain = n_files-nbval
-                        print("class %s, train count: %d" % (i, nbtrain))
-                        print("class %s, test count: %d" % (i, nbval))
-    
-                        # generate test indexes
-                        indexes = np.arange(n_files)
-                        if shuffle: np.random.shuffle(indexes)
-                        
-                        # get some sample
-                        val = np.random.permutation(indexes)[:nbval]
-                        
-                        # remove test from train
-                        indexes = np.array([i for i in indexes if i not in val])
-    
-                        # make the file lists
-                        self.files += [files[i] for i in indexes]
-                        self.validation += [files[i] for i in val]
-    
-                else:
+                    # Identify relevant files for training and validation
+                    files = glob.glob(glob_pattern.format(classname=i))
+                    n_files = len(files)
+                    nbval = int(split * n_files)
+                    nbtrain = n_files-nbval
+                    print("class %s, train count: %d" % (i, nbtrain))
+                    print("class %s, test count: %d" % (i, nbval))
+
+                    # generate indexes
+                    idx = np.arange(n_files)
+                    if shuffle: np.random.shuffle(idx)
                     
-                    for i in classes:
-                        
-                        self.files += glob.glob(glob_pattern.format(classname=i))
-            
-            # Identify video files for prediction
+                    # random sample for validation
+                    val_idx = np.random.permutation(idx)[:nbval]
+                    
+                    # isolate the training indexes
+                    train_idx = np.array([i for i in idx if i not in val_idx])
+
+                    # make the file lists
+                    self.files += [files[i] for i in train_idx]
+
             else:
                 
-                files = glob.glob(glob_pattern)
-                n_files = len(files)
-                print("new video count: %d" % n_files)
-                indexes = np.arange(n_files)
-                self.files += files
+                for i in classes:
+                    
+                    # List the training files
+                    files = glob.glob(glob_pattern.format(classname=i))
+                    print("class %s, file count: %d" % (i, len(files)))
+                    
+                    # Randomly shuffle the training files
+                    np.random.shuffle(files)
+                    
+                    self.files += files
+        
+        # Identify video files for prediction
+        else:
+            
+            files = glob.glob(glob_pattern)
+            print("new video count: %d" % len(files))
+            self.files += files
 
-        # build indexes
         self.files_count = len(self.files)
         self.indexes = np.arange(self.files_count)
         self.classes_count = len(classes)
-
-        # to initialize transformations and shuffle indices
         self.on_epoch_end()
-
-    def get_validation_generator(self):
-        
-        """ Return the validation generator if you've provided split factor """
-        return self.__class__(
-            nb_frames=self.nb_frames,
-            nb_channel=self.nb_channel,
-            target_shape=self.target_shape,
-            classes=self.classes,
-            batch_size=self.batch_size,
-            shuffle=self.shuffle,
-            rescale=self.rescale,
-            _validation_data=self.validation)
 
     def on_epoch_end(self):
         
@@ -182,8 +158,7 @@ class VideoFrameGenerator(Sequence):
 
     def __len__(self):
         
-        return int(np.floor(self.files_count / self.batch_size))
-
+        return int(np.floor(self.files_count/self.batch_size))
 
     def detect_faces(self, frame):
         
@@ -222,6 +197,7 @@ class VideoFrameGenerator(Sequence):
         classes = self.classes
         shape = self.target_shape
         nb_frames = self.nb_frames
+        nb_channel = self.nb_channel
         batch_size = self.batch_size
         face_detection = self.face_detection
         indexes = self.indexes[index*batch_size:(index+1)*batch_size]
@@ -236,7 +212,6 @@ class VideoFrameGenerator(Sequence):
             if self.transformation is not None:
                 transformation = self._random_trans[i]
 
-            # video = random.choice(files)
             video = self.files[i]
             
             # Generate the target array of labels
@@ -276,8 +251,13 @@ class VideoFrameGenerator(Sequence):
                 frame_i += 1
                 if frame_i % frame_step == 0:
                     
-                    # Convert to grayscale
-                    frame = cv2.cvtColor(frame,cv2.COLOR_BGR2RGB)
+                    # Convert to grayscale or color
+                    if nb_channel == 1:
+                        frame = cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY)
+                    else:
+                        frame = cv2.cvtColor(frame,cv2.COLOR_BGR2RGB)
+                        
+                    # Detect faces
                     if face_detection:
                         
                         # Try to isolate the max probability face
@@ -302,17 +282,12 @@ class VideoFrameGenerator(Sequence):
             # End the video capture
             cap.release()
 
-            # apply transformation
+            # Apply transformation
             if transformation is not None:
                 frames = [self.transformation.apply_transform(
                     frame, transformation) for frame in frames]
-
-            # reshape the arrays into sequences for LSTM (timesteps, features)
-            # (500*500*3 = 750000) (HEIGHT*WIDTH*CHANNELS)
-            #frames = np.array(frames)
-            #frames = frames.reshape(self.nb_frames,750000)
     
-            # add the sequence in batch
+            # Add the sequence in batch
             images.append(frames)                
 
         # Return the final image tensors and label arrays        
