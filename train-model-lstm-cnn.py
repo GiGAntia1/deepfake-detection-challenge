@@ -24,10 +24,10 @@ import os, glob, time
 from sklearn.utils import class_weight
 from tensorflow.keras import Input, Model
 from tensorflow.keras import backend as K
-from tensorflow.keras.optimizers import SGD
+from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.losses import binary_crossentropy
 from tensorflow.keras.layers import Dense, Dropout, ConvLSTM2D,\
-BatchNormalization, MaxPooling2D, Flatten, GaussianNoise
+MaxPooling2D, Flatten
 from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping
 import tensorflow as tf
 from tensorflow.keras.applications import Xception
@@ -40,7 +40,7 @@ gpu_devices = tf.config.experimental.list_physical_devices('GPU')
 print(gpu_devices)
 assert len(gpu_devices) > 0, "GPU Not Found"
 tf.config.experimental.set_memory_growth(gpu_devices[0], True)
-tf.compat.v1.disable_eager_execution() 
+tf.compat.v1.disable_eager_execution()
 
 # Allow memory growth
 from tensorflow.compat.v1 import ConfigProto
@@ -59,29 +59,27 @@ FRAME_COUNT = 20
 FRAME_WIDTH = 299
 FRAME_HEIGHT = 299
 FRAME_CHANNELS = 1
-BATCH_SIZE = 2
-EPOCHS = 250
-STEPS_PER_EPOCH = 500
+BATCH_SIZE = 1
+EPOCHS = 25
+STEPS_PER_EPOCH = 1000
 FACE_DETECT = False
-FILEPATH = './checkpoints/weights-20200324.hdf5'
+FILEPATH = './checkpoints/weights-20200330.hdf5'
 
 # Load existing model
 # from tensorflow.keras.models import load_model
-# model = load_model('./checkpoints/weights-20200320.hdf5')
+# model = load_model('./checkpoints/weights-20200328-faces.hdf5')
 
 # Define a new model
 input_shape = Input((FRAME_COUNT, FRAME_WIDTH, FRAME_HEIGHT, FRAME_CHANNELS))
 
-LSTM = ConvLSTM2D(3,(3,3), strides=(1,1), padding='same', activation='relu',\
-recurrent_activation='relu', dropout=0.75, recurrent_dropout=0.75)(input_shape)
-LSTM = BatchNormalization()(LSTM)
+LSTM = ConvLSTM2D(3,(1,1), strides=(1,1), padding='same', activation='relu',\
+recurrent_activation='hard_sigmoid')(input_shape)
 LSTM = MaxPooling2D((2,2), strides=(1,1), padding='same')(LSTM)
 
-XCEPT = Xception(include_top=False, weights='imagenet', pooling='max')(LSTM)
+XCEPT = Xception(include_top=False, weights='imagenet', pooling='avg')(LSTM)
 XCEPT = Flatten()(XCEPT)
-XCEPT = GaussianNoise(0.25)(XCEPT)
 
-OUT = Dropout(0.75)(XCEPT)
+OUT = Dropout(0.80)(XCEPT)
 OUT = Dense(1, activation='sigmoid')(OUT)
 
 model = Model(input_shape, OUT)
@@ -93,26 +91,25 @@ def clip_loss(y_true, y_pred):
     return clip_loss
 
 # Compile and view model summary
-optimizer = SGD(learning_rate=1e-6)
-model.compile(optimizer, loss='binary_crossentropy',\
-metrics=['accuracy', clip_loss])
+optimizer = Adam(learning_rate=1e-5)
+model.compile(optimizer, loss='binary_crossentropy', metrics=['accuracy'])
 model.summary()
 
 # Model checkpoint
-checkpoint = ModelCheckpoint(FILEPATH, monitor='val_clip_loss', verbose=1,\
+checkpoint = ModelCheckpoint(FILEPATH, monitor='val_loss', verbose=1,\
 save_best_only=True, save_weights_only=False, mode='min', period=1)
 
 # Early Stopping
-early_stop = EarlyStopping(monitor='loss', patience=5, mode='min')
+early_stop = EarlyStopping(monitor='val_loss', patience=3, mode='min')
 
 # Combine callbacks
 callbacks = [checkpoint, early_stop]
 
 # Image Processing
-imgGen = ImageDataGenerator(shear_range=0.1, zoom_range=0.3,\
-rotation_range=30, horizontal_flip=True, featurewise_center=False,\
+imgGen = ImageDataGenerator(shear_range=0.1, zoom_range=0.5,\
+rotation_range=20, horizontal_flip=True, featurewise_center=False,\
 featurewise_std_normalization=False, rescale=False, height_shift_range=0.3,\
-width_shift_range=0.3, brightness_range=[0.6,1.4])
+width_shift_range=0.3, brightness_range=[0.6,1.5])
 
 # Define custom video generators
 genTrain = VideoFrameGenerator(phase='training', face_detection=FACE_DETECT,\
@@ -137,13 +134,16 @@ class_weights = dict(zip([0,1],class_weights))
 start_time = time.time()
 
 model.fit(genTrain, validation_data=genVal, use_multiprocessing=True,\
-epochs=EPOCHS, steps_per_epoch=STEPS_PER_EPOCH, workers=15,\
-max_queue_size=30, callbacks=callbacks, shuffle=True,\
+epochs=EPOCHS, steps_per_epoch=STEPS_PER_EPOCH, validation_steps=500, workers=15,\
+max_queue_size=15, callbacks=callbacks, shuffle=True,\
 class_weight=class_weights)
 
 # Print completion time
 finish_time = (time.time()-start_time)/3600
 print("---model training finished in %.2f hours---" % (finish_time))
+
+# Save the model outside of the training process
+# model.save(FILEPATH)
 
 # Define the VideoFrameGenerator, specific to frame dimensions
 testgen = VideoFrameGenerator(phase='predict', face_detection=FACE_DETECT,\
@@ -153,7 +153,7 @@ glob_pattern='./test_videos/*.mp4', transformation=None)
 
 # Apply the generator and make predictions with the model
 probs = model.predict(testgen, verbose=1, workers=15,\
-use_multiprocessing=True, max_queue_size=30)
+use_multiprocessing=True, max_queue_size=15)
 
 # Plot the predicted probabilities
 plt.hist(probs, bins=20)
